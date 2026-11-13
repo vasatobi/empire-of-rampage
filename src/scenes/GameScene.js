@@ -17,6 +17,7 @@ import { BuildingMenu } from '../ui/BuildingMenu.js';
 export class GameScene extends Scene {
   constructor() {
     super('GameScene');
+    this.gridOffset = { x: 0, y: 0 };
   }
 
   create() {
