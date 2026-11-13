@@ -41,15 +41,15 @@ export class GameScene extends Scene {
     // --- Terrain ---
     this.createTerrain();
 
+    // --- Reset resources (ย้ายขึ้นมาก่อน UI) ---
+    resetResources();
+
     // --- Camera ---
     this.cameras.main.setSize(this.gridSize * this.tileSize, this.gridSize * this.tileSize);
     this.cameras.main.setPosition(0, 0);
 
     // --- Input ---
     this.setupInput();
-
-    // --- Reset resources ---
-    resetResources();
 
     // --- Game state ---
     this.gameStateChanged = false;
