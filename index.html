@@ -24,6 +24,58 @@
 </head>
 <body>
   <div id="app"></div>
+
+  <!-- Error overlay -->
+  <div id="error-overlay">
+    <div class="error-title">❌ เกิดข้อผิดพลาดในเกม!</div>
+    <div id="error-message"></div>
+    <div class="error-detail">Reload หน้าเพื่อลองใหม่</div>
+    <div class="error-stack" id="error-stack"></div>
+  </div>
+
   <script type="module" src="/src/main.js"></script>
+
+  <script>
+    // แสดง error บนหน้าจอ
+    window.addEventListener('error', function(e) {
+      const overlay = document.getElementById('error-overlay');
+      const messageEl = document.getElementById('error-message');
+      const stackEl = document.getElementById('error-stack');
+
+      let message = 'รายละเอียดไม่ระบุ';
+      if (e.message) {
+        message = e.message;
+      }
+      if (e.filename) {
+        message += ' (ที่ ' + e.filename + ':' + e.lineno + ')';
+      }
+
+      messageEl.textContent = message;
+      if (e.error && e.error.stack) {
+        stackEl.innerHTML = e.error.stack
+          .split('\n')
+          .map(line => '• ' + line)
+          .join('<br>');
+      }
+      overlay.classList.add('show');
+      console.error('[EMPIRE OF RAMPAGE] JavaScript Error:', e);
+    });
+
+    window.addEventListener('unhandledrejection', function(e) {
+      const overlay = document.getElementById('error-overlay');
+      const messageEl = document.getElementById('error-message');
+      const stackEl = document.getElementById('error-stack');
+
+      messageEl.textContent = 'Promise Rejection: ' + (e.reason ? e.reason.message : 'ไม่ระบุ');
+      if (e.reason && e.reason.stack) {
+        stackEl.innerHTML = e.reason.stack
+          .split('\n')
+          .map(line => '• ' + line)
+          .join('<br>');
+      }
+      overlay.classList.add('show');
+      console.error('[EMPIRE OF RAMPAGE] Unhandled Rejection:', e.reason);
+    });
+  </script>
 </body>
 </html>
