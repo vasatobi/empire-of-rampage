@@ -1,6 +1,7 @@
 // ===============================
 // main.js — entry point
 // ===============================
+import Phaser from 'phaser';
 import { Game } from 'phaser';
 import { MainMenu } from './scenes/MainMenu.js';
 import { GameScene } from './scenes/GameScene.js';
