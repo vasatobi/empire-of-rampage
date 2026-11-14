@@ -6,76 +6,88 @@
   <title>Empire of Rampage</title>
   <link rel="icon" href="data:," />
   <style>
-    body {
+    html, body {
       margin: 0;
+      height: 100%;
       overflow: hidden;
       background: #0a0a0a;
+      font-family: 'Courier New', monospace;
+    }
+    #app {
+      width: 100vw;
+      height: 100vh;
       display: flex;
       justify-content: center;
       align-items: center;
-      height: 100vh;
-      font-family: 'Courier New', monospace;
     }
     canvas {
       border: 2px solid #1a1a2e;
       border-radius: 8px;
       box-shadow: 0 0 30px rgba(0, 100, 255, 0.15);
     }
+
+    /* กล่องแสดง error: ซ่อนไว้จนกว่าจะเกิด error จริง */
+    #error-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      overflow: auto;
+      box-sizing: border-box;
+      padding: 24px;
+      background: rgba(10, 10, 10, 0.96);
+      color: #ff6b6b;
+      font-size: 14px;
+    }
+    #error-overlay.show { display: block; }
+    #error-overlay .error-title { font-size: 20px; font-weight: bold; margin-bottom: 12px; }
+    #error-overlay .error-detail { color: #9ca3af; margin-top: 12px; }
+    #error-overlay .error-stack {
+      margin-top: 12px;
+      color: #9ca3af;
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
   </style>
 </head>
 <body>
   <div id="app"></div>
 
-  <!-- Error overlay (display: none ค่าเริ่มต้น) -->
-  <div id="error-overlay" style="display: none;">
+  <div id="error-overlay">
     <div class="error-title">❌ เกิดข้อผิดพลาดในเกม!</div>
     <div id="error-message"></div>
-    <div class="error-detail">Reload หน้าเพื่อลองใหม่</div>
+    <div class="error-detail">Reload หน้าเพื่อลองใหม่ (ถ่ายภาพหน้านี้ส่งให้ผู้พัฒนาได้)</div>
     <div class="error-stack" id="error-stack"></div>
   </div>
 
   <script type="module" src="/src/main.js"></script>
 
   <script>
-    // แสดง error บนหน้าจอ
-    window.addEventListener('error', function(e) {
-      const overlay = document.getElementById('error-overlay');
-      const messageEl = document.getElementById('error-message');
-      const stackEl = document.getElementById('error-stack');
+    // คลิกขวาใช้ลบสิ่งก่อสร้าง จึงปิดเมนูคลิกขวาของเบราว์เซอร์
+    document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
-      let message = 'รายละเอียดไม่ระบุ';
-      if (e.message) {
-        message = e.message;
-      }
-      if (e.filename) {
-        message += ' (ที่ ' + e.filename + ':' + e.lineno + ')';
-      }
+    // แสดง error บนหน้าจอ (เฉพาะ script error จริง ไม่รวมไฟล์ที่โหลดไม่เจอ เช่น favicon)
+    function showError(message, stack) {
+      document.getElementById('error-message').textContent = message;
+      document.getElementById('error-stack').textContent = stack || '';
+      document.getElementById('error-overlay').classList.add('show');
+    }
 
-      messageEl.textContent = message;
-      if (e.error && e.error.stack) {
-        stackEl.innerHTML = e.error.stack
-          .split('\n')
-          .map(line => '• ' + line)
-          .join('<br>');
-      }
-      overlay.classList.add('show');
-      console.error('[EMPIRE OF RAMPAGE] JavaScript Error:', e);
+    window.addEventListener('error', function (e) {
+      var message = e.message || 'ไม่ทราบสาเหตุ';
+      if (e.filename) message += ' (' + e.filename + ':' + e.lineno + ')';
+      showError(message, e.error && e.error.stack);
+      console.error('[EMPIRE OF RAMPAGE] JavaScript Error:', e.error || e.message);
     });
 
-    window.addEventListener('unhandledrejection', function(e) {
-      const overlay = document.getElementById('error-overlay');
-      const messageEl = document.getElementById('error-message');
-      const stackEl = document.getElementById('error-stack');
-
-      messageEl.textContent = 'Promise Rejection: ' + (e.reason ? e.reason.message : 'ไม่ระบุ');
-      if (e.reason && e.reason.stack) {
-        stackEl.innerHTML = e.reason.stack
-          .split('\n')
-          .map(line => '• ' + line)
-          .join('<br>');
-      }
-      overlay.classList.add('show');
-      console.error('[EMPIRE OF RAMPAGE] Unhandled Rejection:', e.reason);
+    window.addEventListener('unhandledrejection', function (e) {
+      var reason = e.reason;
+      showError(
+        'Promise Rejection: ' + (reason && reason.message ? reason.message : String(reason)),
+        reason && reason.stack
+      );
+      console.error('[EMPIRE OF RAMPAGE] Unhandled Rejection:', reason);
     });
   </script>
 </body>

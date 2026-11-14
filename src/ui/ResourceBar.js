@@ -1,81 +1,84 @@
 // ===============================
-// ResourceBar — แถบแสดงทรัพยากร
+// ResourceBar — แถบแสดงทรัพยากรด้านบนจอ
 // ===============================
-import { RESOURCES, getResource } from '../data/resources.js';
+import { RESOURCES } from '../data/resources.js';
+
+const FONT = 'Courier New, monospace';
 
 export class ResourceBar {
-  constructor(scene, x, y, width = 400) {
+  constructor(scene, x = 0, y = 0, width = 800) {
     this.scene = scene;
     this.x = x;
     this.y = y;
     this.width = width;
+    this.height = 36;
     this.items = [];
 
-    // Header
-    this.header = scene.add.text(x, y, 'เศรษฐกิจจักรวรรดิ', {
-      fontFamily: 'Courier New, monospace',
-      fontSize: '18px',
-      color: '#f59e0b',
-      bold: true,
-    }).setOrigin(0.5, 0.5);
+    // พื้นหลังแถบ (ติดกับหน้าจอ ไม่เลื่อนตามกล้อง)
+    this.bg = scene.add
+      .rectangle(x, y, width, this.height, 0x0a0a0a, 0.85)
+      .setOrigin(0, 0)
+      .setStrokeStyle(1, 0x1e293b)
+      .setScrollFactor(0)
+      .setDepth(50);
 
-    // Resource items
-    this.resourceKeys = Object.values(RESOURCES).map(r => r.key);
+    const keys = Object.keys(RESOURCES);
+    const slots = keys.length + 1; // ทรัพยากรทุกชนิด + ประชากร
+    const slotWidth = width / slots;
+    const midY = y + this.height / 2;
 
-    this.resourceLabels = {};
-    this.resourceValues = {};
-
-    const itemHeight = 36;
-    const startY = y + 36;
-    const spacing = 60;
-
-    this.resourceKeys.forEach((key, i) => {
-      const res = getResource(key);
-      const icon = res.symbol;
-      const label = res.name;
-      const current = res.current;
-      const max = res.max;
-      const color = res.color;
-
-      const labelText = scene.add.text(x, startY + i * spacing, `${icon} ${label}`, {
-        fontFamily: 'Courier New, monospace',
-        fontSize: '16px',
-        color: '#e2e8f0',
-      }).setOrigin(0, 0.5);
-
-      const valueText = scene.add.text(x + 180, startY + i * spacing, `${current.toLocaleString()} / ${max.toLocaleString()}`, {
-        fontFamily: 'Courier New, monospace',
-        fontSize: '16px',
-        color: color,
-        bold: true,
-      }).setOrigin(0, 0.5);
-
-      this.items.push({ label: labelText, value: valueText });
+    keys.forEach((key, i) => {
+      const res = RESOURCES[key];
+      const text = scene.add
+        .text(x + i * slotWidth + 12, midY, '', {
+          fontFamily: FONT,
+          fontSize: '15px',
+          fontStyle: 'bold',
+          color: res.color,
+        })
+        .setOrigin(0, 0.5)
+        .setScrollFactor(0)
+        .setDepth(51);
+      this.items.push({ key, text, last: null });
     });
 
-    // Level / progress indicator
-    const levelText = scene.add.text(x, startY + this.resourceKeys.length * spacing + 20, 'ระดับจักรวรรดิ: 1', {
-      fontFamily: 'Courier New, monospace',
-      fontSize: '14px',
-      color: '#9ca3af',
-    }).setOrigin(0, 0.5);
+    this.popText = scene.add
+      .text(x + keys.length * slotWidth + 12, midY, '', {
+        fontFamily: FONT,
+        fontSize: '15px',
+        fontStyle: 'bold',
+        color: '#e2e8f0',
+      })
+      .setOrigin(0, 0.5)
+      .setScrollFactor(0)
+      .setDepth(51);
+    this.lastPop = null;
 
-    this.header.setdepth(10);
-    this.header.setScrollFactor(0);
+    this.update();
   }
 
-  update() {
-    this.items.forEach(item => {
-      if (item.label) item.label.setVisible(true);
-      if (item.value) item.value.setVisible(true);
+  // เรียกทุกครั้งที่ค่าเปลี่ยน (เรียกบ่อยได้ เพราะเปลี่ยนข้อความเฉพาะเมื่อค่าไม่เหมือนเดิม)
+  update(stats = {}) {
+    this.items.forEach((item) => {
+      const res = RESOURCES[item.key];
+      const current = res.current ?? res.base ?? 0;
+      if (item.last !== current) {
+        item.last = current;
+        item.text.setText(`${res.symbol} ${res.name} ${current.toLocaleString()}`);
+      }
     });
+
+    const pop = stats.population ?? 0;
+    if (this.lastPop !== pop) {
+      this.lastPop = pop;
+      this.popText.setText(`👥 ประชากร ${pop.toLocaleString()}`);
+    }
   }
 
   cleanup() {
-    this.items.forEach(item => {
-      if (item.label) item.label.destroy();
-      if (item.value) item.value.destroy();
-    });
-    if (this.header) this.header.destroy();
+    this.items.forEach((item) => item.text.destroy());
+    this.items = [];
+    if (this.popText) this.popText.destroy();
+    if (this.bg) this.bg.destroy();
   }
 }

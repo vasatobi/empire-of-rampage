@@ -1,430 +1,385 @@
 // ===============================
 // GameScene — หน้าเกมหลัก
 // ===============================
-import { Scene } from 'phaser';
-import { Grid } from '../utils/grid.js';
-import { RESOURCES, resetResources, getResource, addResource, removeResource } from '../data/resources.js';
-import { BUILDINGS, BUILDING_GROUPS } from '../data/buildings.js';
-import { createGrassTile, createBuildingSprite } from '../utils/pixel-art.js';
-import { GrassTile } from '../objects/tiles/GrassTile.js';
-import { BuildingTile } from '../objects/tiles/BuildingTile.js';
-import { House } from '../objects/buildings/House.js';
-import { Farm } from '../objects/buildings/Farm.js';
-import { Road } from '../objects/buildings/Road.js';
+// เขียนใหม่ให้ทำงานได้เองโดยใช้แค่ data/resources.js, data/buildings.js,
+// ui/ResourceBar.js และ ui/BuildingMenu.js
+// (ไม่ใช้ utils/grid.js, utils/pixel-art.js และ objects/* อีกต่อไป)
+import Phaser from 'phaser';
+import {
+  RESOURCES,
+  resetResources,
+  getResource,
+  addResource,
+  removeResource,
+} from '../data/resources.js';
+import { BUILDINGS } from '../data/buildings.js';
 import { ResourceBar } from '../ui/ResourceBar.js';
 import { BuildingMenu } from '../ui/BuildingMenu.js';
 
-export class GameScene extends Scene {
+// --- ค่าที่ปรับได้ ---
+const GRID_SIZE = 64;          // แผนที่ 64x64 ช่อง
+const TILE = 32;               // ช่องละ 32 px
+const WORLD = GRID_SIZE * TILE;
+const CAMERA_SPEED = 500;      // px ต่อวินาที
+
+const POP_PER_HOUSE = 4;
+const FOOD_PER_PERSON_PER_SEC = 0.05; // คนละ 1 อาหารต่อ 20 วินาที
+const FARM_FOOD_EVERY = 2;     // ฟาร์มละ 1 อาหารต่อ 2 วินาที
+const HOUSE_WOOD_EVERY = 4;    // บ้านละ 1 ไม้ต่อ 4 วินาที   (ค่าที่เพิ่มเอง ปรับ/ลบได้)
+const HOUSE_STONE_EVERY = 8;   // บ้านละ 1 หินต่อ 8 วินาที   (ค่าที่เพิ่มเอง ปรับ/ลบได้)
+
+const WIN_BUILDINGS = 5;
+const WIN_FOOD = 1000;
+
+const FONT = 'Courier New, monospace';
+
+const hex = (s) => parseInt(String(s).replace('#', ''), 16);
+
+export class GameScene extends Phaser.Scene {
   constructor() {
     super('GameScene');
-    this.gridOffset = { x: 0, y: 0 };
   }
 
   create() {
-    // --- Config ---
-    this.gridSize = 64;
-    this.tileSize = 32;
-    this.showGrid = true;
-
-    // --- Grid ---
-    this.grid = new Grid(this.gridSize, this.gridSize);
-
-    // --- Game state ---
-    this.buildings = [];
-    this.buildingPreview = null;
+    // สถานะทั้งหมดต้องตั้งใหม่ทุกครั้งที่ create() (รวมถึงตอน scene.restart)
+    this.gameOver = false;
     this.selectedBuilding = null;
-    this.nextBuildId = 1; // ลำดับ ID ของ building
+    this.preview = null;
+    this.buildings = [];
+    this.occupancy = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(null));
+    this.tickCount = 0;
+    this.foodEaten = 0;
 
-    // --- UI ---
-    this.createUI();
+    resetResources(); // ต้องมาก่อน createUI เสมอ
 
-    // --- Terrain ---
     this.createTerrain();
-
-    // --- Reset resources (ย้ายขึ้นมาก่อน UI) ---
-    resetResources();
-
-    // --- Camera ---
-    this.cameras.main.setSize(this.gridSize * this.tileSize, this.gridSize * this.tileSize);
-    this.cameras.main.setPosition(0, 0);
-
-    // --- Input ---
+    this.createUI();
+    this.setupCamera();
     this.setupInput();
 
-    // --- Game state ---
-    this.gameStateChanged = false;
+    // ฟาร์มเริ่มต้นกลางแผนที่
+    const start = this.placeBuilding('farm', 30, 30);
+    this.cameras.main.centerOn(
+      start.gx * TILE + (start.w * TILE) / 2,
+      start.gy * TILE + (start.h * TILE) / 2
+    );
 
-    // --- Handle resize ---
-    this.scale.on('resize', this.handleResize, this);
+    // เศรษฐกิจเดินทุก 1 วินาที
+    this.time.addEvent({ delay: 1000, loop: true, callback: this.tick, callbackScope: this });
 
-    // --- Place a default farm to show production ---
-    this.placeDefaultFarm();
+    this.refreshUI();
   }
 
+  // ---------- แผนที่ ----------
   createTerrain() {
-    const size = this.tileSize;
-    for (let y = 0; y < this.gridSize; y++) {
-      for (let x = 0; x < this.gridSize; x++) {
-        const tile = new GrassTile(this, x * size, y * size, size);
-        tile.spawn();
-        this.tiles.push(tile);
-      }
+    this.add.rectangle(0, 0, WORLD, WORLD, 0x2f6b2f).setOrigin(0, 0).setDepth(0);
+
+    // เส้นตาราง (ใช้ Rectangle บางๆ เพื่อไม่พึ่ง API ที่ต่างกันระหว่าง Phaser 3/4)
+    for (let i = 0; i <= GRID_SIZE; i++) {
+      const p = i * TILE;
+      this.add.rectangle(p, 0, 1, WORLD, 0x1f4d1f, 0.5).setOrigin(0, 0).setDepth(1);
+      this.add.rectangle(0, p, WORLD, 1, 0x1f4d1f, 0.5).setOrigin(0, 0).setDepth(1);
     }
   }
 
-  placeDefaultFarm() {
-    // Place a farm to show production system
-    const farm = new Farm(this, 4 * this.tileSize, 4 * this.tileSize);
-    farm.spawn();
-    this.buildings.push(farm);
-    // Register on grid
-    this.grid.placeBuilding(4, 4, 'farm');
-  }
-
+  // ---------- UI ----------
   createUI() {
-    this.resourceBar = new ResourceBar(this, 20, 20, 400);
-    this.buildingMenu = new BuildingMenu(this, 580, 20);
+    this.resourceBar = new ResourceBar(this, 0, 0, 800);
+    this.buildingMenu = new BuildingMenu(this, 400, 592, (id) => this.selectBuilding(id));
+
+    this.hint = this.add
+      .text(
+        400,
+        526,
+        'ลูกศร/WASD: เลื่อนกล้อง  |  คลิกซ้าย: วาง  |  คลิกขวา: ลบ  |  Esc: ยกเลิก',
+        { fontFamily: FONT, fontSize: '12px', color: '#9ca3af' }
+      )
+      .setOrigin(0.5, 1)
+      .setScrollFactor(0)
+      .setDepth(51);
   }
 
+  refreshUI() {
+    this.resourceBar.update({ population: this.getPopulation() });
+  }
+
+  // ---------- กล้อง ----------
+  setupCamera() {
+    this.cameras.main.setBounds(0, 0, WORLD, WORLD);
+  }
+
+  // ---------- อินพุต ----------
   setupInput() {
-    // Left click — place building
-    this.input.on('pointerdown', (pointer) => {
-      if (pointer.rightButtonDown()) return;
-      if (this.buildingMenu.visible === true) return;
-      const cell = this.getCellAt(pointer.x, pointer.y);
-      if (cell) {
-        const buildingId = this.selectedBuilding;
-        if (buildingId && BUILDINGS[buildingId]) {
-          const building = BUILDINGS[buildingId];
-          const { cost } = building;
-          let canAfford = true;
-          const missing = [];
-          Object.entries(cost).forEach(([resKey, amount]) => {
-            const res = getResource(resKey);
-            if (res.current < amount) {
-              canAfford = false;
-              missing.push(`${res.symbol} ${amount - res.current}`);
-            }
-          });
-          if (canAfford) {
-            // Deduct
-            Object.entries(cost).forEach(([resKey, amount]) => {
-              removeResource(resKey, amount);
-            });
-            // Place
-            this.grid.placeBuilding(Math.floor(cell.x), Math.floor(cell.y), buildingId);
-            this.updateTerrain();
-            this.gameStateChanged = true;
-          } else {
-            const msg = this.add.text(pointer.x, pointer.y, `ไม่พอ: ${missing.join(', ')}`, {
-              fontFamily: 'Courier New, monospace',
-              fontSize: '13px',
-              color: '#ef4444',
-            }).setDepth(100);
-            this.time.delayedCall(1500, () => msg.destroy());
-          }
-        }
-      }
-    });
+    // กันเมนูคลิกขวาของเบราว์เซอร์ (ใช้คลิกขวาเพื่อลบ)
+    this.input.mouse?.disableContextMenu?.();
 
-    // Right click — remove building
-    this.input.on('pointerdown', (pointer) => {
-      if (pointer.rightButtonDown()) {
-        const cell = this.getCellAt(pointer.x, pointer.y);
-        if (cell) {
-          this.grid.removeBuilding(Math.floor(cell.x), Math.floor(cell.y));
-          this.updateTerrain();
-        }
-      }
-    });
+    this.cursors = this.input.keyboard.createCursorKeys();
+    this.wasd = this.input.keyboard.addKeys('W,A,S,D');
 
-    // Keyboard shortcuts
-    this.input.keyboard.on('keydown-R', () => this.selectBuilding('road'));
     this.input.keyboard.on('keydown-H', () => this.selectBuilding('house'));
     this.input.keyboard.on('keydown-F', () => this.selectBuilding('farm'));
-    this.input.keyboard.on('keydown-1', () => this.selectBuilding('house'));
-    this.input.keyboard.on('keydown-2', () => this.selectBuilding('farm'));
-    this.input.keyboard.on('keydown-3', () => this.selectBuilding('road'));
+    this.input.keyboard.on('keydown-R', () => this.selectBuilding('road'));
+    this.input.keyboard.on('keydown-ONE', () => this.selectBuilding('house'));
+    this.input.keyboard.on('keydown-TWO', () => this.selectBuilding('farm'));
+    this.input.keyboard.on('keydown-THREE', () => this.selectBuilding('road'));
+    this.input.keyboard.on('keydown-ESC', () => this.selectBuilding(null));
+
+    this.input.on('pointerdown', this.handlePointerDown, this);
   }
 
-  getCellAt(px, py) {
-    const col = Math.floor((px - this.gridOffset.x) / this.tileSize);
-    const row = Math.floor((py - this.gridOffset.y) / this.tileSize);
-    if (col < 0 || col >= this.gridSize || row < 0 || row >= this.gridSize) return null;
-    return { x: col, y: row };
-  }
+  handlePointerDown(pointer, currentlyOver) {
+    if (this.gameOver) return;
+    // ถ้าคลิกโดนปุ่ม UI ไม่ต้องวางของบนแผนที่
+    if (currentlyOver && currentlyOver.length > 0) return;
 
-  selectBuilding(buildingId) {
-    this.selectedBuilding = buildingId;
-    this.buildingMenu.selectedBuilding = buildingId;
-    // Highlight
-    if (this.buildingPreview) {
-      this.buildingPreview.destroy();
-      this.buildingPreview = null;
+    const gx = Math.floor(pointer.worldX / TILE);
+    const gy = Math.floor(pointer.worldY / TILE);
+    if (!this.inBounds(gx, gy)) return;
+
+    if (pointer.rightButtonDown()) {
+      this.removeBuildingAt(gx, gy);
+      return;
     }
-    if (BUILDINGS[buildingId]) {
-      const b = BUILDINGS[buildingId];
-      const px = this.grid.cells[0][0].x * this.tileSize;
-      const py = this.grid.cells[0][0].y * this.tileSize;
-      const img = this.add.image(px, py, b.icon)
-        .setOrigin(0.5, 0.5)
+    if (!this.selectedBuilding) return;
+    this.tryPlace(this.selectedBuilding, gx, gy, pointer);
+  }
+
+  // เลือกสิ่งก่อสร้าง (เลือกซ้ำ = ยกเลิก, null = ยกเลิก)
+  selectBuilding(id) {
+    const next = id && id === this.selectedBuilding ? null : id;
+    this.selectedBuilding = next && BUILDINGS[next] ? next : null;
+    this.buildingMenu.setSelected(this.selectedBuilding);
+
+    if (this.preview) {
+      this.preview.destroy();
+      this.preview = null;
+    }
+    if (this.selectedBuilding) {
+      const { w, h } = BUILDINGS[this.selectedBuilding].area;
+      this.preview = this.add
+        .rectangle(0, 0, w * TILE, h * TILE, 0x34d399, 0.45)
+        .setOrigin(0, 0)
         .setDepth(10)
-        .setScale(2);
-      this.buildingPreview = img;
+        .setVisible(false);
     }
   }
 
-  updateTerrain() {
-    // If there are no buildings, rebuild terrain
-    if (this.buildings.length === 0 && this.grid.getBuildingCounts().totalBuildings === 0) {
-      this.createTerrain();
+  // ---------- Grid / การวาง ----------
+  inBounds(gx, gy) {
+    return gx >= 0 && gy >= 0 && gx < GRID_SIZE && gy < GRID_SIZE;
+  }
+
+  canPlace(gx, gy, w, h) {
+    if (!this.inBounds(gx, gy) || !this.inBounds(gx + w - 1, gy + h - 1)) return false;
+    for (let y = gy; y < gy + h; y++) {
+      for (let x = gx; x < gx + w; x++) {
+        if (this.occupancy[y][x]) return false;
+      }
+    }
+    return true;
+  }
+
+  // คืนรายการทรัพยากรที่ยังขาด เช่น ['ไม้ 5', 'หิน 2']
+  getMissing(cost) {
+    return Object.entries(cost)
+      .map(([key, amount]) => {
+        const have = getResource(key)?.current ?? 0;
+        return have < amount ? `${RESOURCES[key].name} ${amount - have}` : null;
+      })
+      .filter(Boolean);
+  }
+
+  tryPlace(id, gx, gy, pointer) {
+    const def = BUILDINGS[id];
+    const { w, h } = def.area;
+
+    if (!this.canPlace(gx, gy, w, h)) {
+      this.flashMessage(pointer, 'วางตรงนี้ไม่ได้');
+      return;
+    }
+    const missing = this.getMissing(def.cost);
+    if (missing.length > 0) {
+      this.flashMessage(pointer, `ทรัพยากรไม่พอ: ${missing.join(', ')}`);
       return;
     }
 
-    // Remove old tiles (keep grass, remove old building sprites)
-    this.tiles.forEach(t => t.despawn());
-    this.tiles = [];
-
-    // Rebuild terrain
-    this.createTerrain();
-
-    // Remove old building sprite instances
-    // Note: building tiles are already removed by despawn in next step
-    this.buildings.forEach(b => {
-      if (b.sprite) {
-        b.sprite.destroy();
-      }
-    });
-    this.buildings = [];
-
-    // Re-add buildings from grid
-    const placed = this.grid.getBuildingCounts();
-    Object.entries(placed).forEach(([bId, count]) => {
-      for (let i = 0; i < count; i++) {
-        for (let y = 0; y < this.gridSize; y++) {
-          for (let x = 0; x < this.gridSize; x++) {
-            const cell = this.grid.cells[y][x];
-            if (cell.building && cell.building.id === bId) {
-              const BuildingClass = this.getBuildingClass(bId);
-              if (BuildingClass) {
-                const tile = new BuildingClass(this, x * this.tileSize, y * this.tileSize);
-                tile.spawn();
-                this.buildings.push(tile);
-              }
-              break;
-            }
-          }
-        }
-      }
-    });
+    Object.entries(def.cost).forEach(([key, amount]) => removeResource(key, amount));
+    this.placeBuilding(id, gx, gy);
+    this.refreshUI();
+    this.checkGameState();
   }
 
-  getBuildingClass(buildingId) {
-    const map = {
-      house: House,
-      farm: Farm,
-      road: Road,
-    };
-    return map[buildingId];
-  }
+  placeBuilding(id, gx, gy) {
+    const def = BUILDINGS[id];
+    const { w, h } = def.area;
+    const px = gx * TILE;
+    const py = gy * TILE;
 
-  update() {
-    // Update resource bar
-    this.resourceBar.update();
+    const rect = this.add
+      .rectangle(px + 1, py + 1, w * TILE - 2, h * TILE - 2, hex(def.color))
+      .setOrigin(0, 0)
+      .setStrokeStyle(2, hex(def.highlight))
+      .setDepth(5);
 
-    // Game loop: update buildings (production)
-    this.updateBuildings();
+    const icon = this.add
+      .text(px + (w * TILE) / 2, py + (h * TILE) / 2, def.icon, {
+        fontFamily: FONT,
+        fontSize: `${Math.floor(Math.min(w, h) * TILE * 0.55)}px`,
+      })
+      .setOrigin(0.5, 0.5)
+      .setDepth(6);
 
-    // Game state management
-    this.updateGameState();
-
-    // Update camera
-    this.updateCamera();
-  }
-
-  // Pathfinding: check if two cells are connected via roads
-  areConnected(x1, y1, x2, y2) {
-    // Simple BFS to check if two cells are connected
-    if (x1 === x2 && y1 === y2) return true;
-    const visited = new Set();
-    const queue = [{ x: x1, y: y1 }];
-    visited.add(`${x1},${y1}`);
-
-    while (queue.length > 0) {
-      const current = queue.shift();
-      const [cx, cy] = [current.x, current.y];
-
-      // Check neighbors
-      const neighbors = [
-        { x: cx + 1, y: cy },
-        { x: cx - 1, y: cy },
-        { x: cx, y: cy + 1 },
-        { x: cx, y: cy - 1 },
-      ];
-
-      for (const neighbor of neighbors) {
-        const key = `${neighbor.x},${neighbor.y}`;
-        if (visited.has(key)) continue;
-        if (!this.grid.inBounds(neighbor.x, neighbor.y)) continue;
-        const cell = this.grid.cells[neighbor.y][neighbor.x];
-        if (cell.type === 'road' || (cell.building && cell.building.id === 'road')) {
-          visited.add(key);
-          queue.push(neighbor);
-          if (neighbor.x === x2 && neighbor.y === y2) return true;
-        } else if (cell.type === 'grass') {
-          // Skip grass, continue BFS through passages
-          visited.add(key);
-          queue.push(neighbor);
-        }
+    const building = { id, gx, gy, w, h, rect, icon };
+    for (let y = gy; y < gy + h; y++) {
+      for (let x = gx; x < gx + w; x++) {
+        this.occupancy[y][x] = building;
       }
     }
-    return false;
+    this.buildings.push(building);
+    return building;
   }
 
-  // Check if a new road placement would create a valid connection
-  canConnectRoads(cx, cy) {
-    // Check if this road connects to at least one existing road or building
-    const cellsToCheck = [
-      { x: cx + 1, y: cy },
-      { x: cx - 1, y: cy },
-      { x: cx, y: cy + 1 },
-      { x: cx, y: cy - 1 },
-    ];
+  removeBuildingAt(gx, gy) {
+    const building = this.occupancy[gy][gx];
+    if (!building) return;
 
-    let hasConnection = false;
-    for (const { x, y } of cellsToCheck) {
-      if (!this.grid.inBounds(x, y)) continue;
-      const cell = this.grid.cells[y][x];
-      if (cell.type === 'road' || cell.building?.id === 'road' || cell.building?.id === 'house') {
-        hasConnection = true;
-        break;
+    for (let y = building.gy; y < building.gy + building.h; y++) {
+      for (let x = building.gx; x < building.gx + building.w; x++) {
+        this.occupancy[y][x] = null;
       }
     }
-    return hasConnection;
+    building.rect.destroy();
+    building.icon.destroy();
+    this.buildings = this.buildings.filter((b) => b !== building);
+    this.refreshUI();
   }
 
-  updateBuildings() {
-    // Farm produces 1 food per 2 seconds
-    for (const building of this.buildings) {
-      if (building instanceof Farm) {
-        building.updateProduction(this);
-      }
-    }
-
-    // House: no production, but tracks population
-    for (const building of this.buildings) {
-      if (building instanceof House) {
-        building.update(this);
-      }
-    }
-  }
-
-  // Game state management
-  updateGameState() {
-    // Check lose condition: no food available
-    if (getResource('food').current <= 0) {
-      this.loseGame();
-    }
-
-    // Check goal condition: reach 5 buildings and 1000 food
-    if (this.buildings.length >= 5) {
-      // Check if food is plenty (1000+)
-      if (getResource('food').current >= 1000) {
-        this.winGame();
-      }
-    }
-  }
-
-  loseGame() {
-    // Game over - show message
-    const msg = this.add.text(
-      this.cameras.main.width / 2,
-      this.cameras.main.height / 2,
-      '🏚️  เกมสิ้นสุด - ไม่มีอาหาร!',
-      {
-        fontFamily: 'Courier New, monospace',
-        fontSize: '28px',
+  // ข้อความลอยสั้นๆ ที่ตำแหน่งเมาส์ (พิกัดหน้าจอ)
+  flashMessage(pointer, message) {
+    const msg = this.add
+      .text(pointer.x, pointer.y - 12, message, {
+        fontFamily: FONT,
+        fontSize: '14px',
         color: '#ef4444',
-        bold: true,
-      }
-    ).setOrigin(0.5, 0.5).setDepth(100);
-
-    // Disable input
-    this.input.enabled = false;
-
-    // Auto restart after 3 seconds
-    this.time.delayedCall(3000, () => {
-      this.restartGame();
-    });
+        backgroundColor: '#0a0a0a',
+        padding: { x: 6, y: 3 },
+      })
+      .setOrigin(0.5, 1)
+      .setScrollFactor(0)
+      .setDepth(100);
+    this.time.delayedCall(1500, () => msg.destroy());
   }
 
-  winGame() {
-    // Victory
-    const msg = this.add.text(
-      this.cameras.main.width / 2,
-      this.cameras.main.height / 2,
-      '🏆  ชนะ! จักรวรรดิของคุณเจริญรุ่งเรือง!',
-      {
-        fontFamily: 'Courier New, monospace',
-        fontSize: '28px',
-        color: '#34d399',
-        bold: true,
-      }
-    ).setOrigin(0.5, 0.5).setDepth(100);
-
-    this.input.enabled = false;
-
-    this.time.delayedCall(3000, () => {
-      this.restartGame();
-    });
+  // ---------- เศรษฐกิจ ----------
+  countOf(id) {
+    return this.buildings.filter((b) => b.id === id).length;
   }
 
-  restartGame() {
-    // Reload the scene
-    this.scene.restart();
+  getPopulation() {
+    return this.countOf('house') * POP_PER_HOUSE;
   }
 
-  // Resource production system
-  updateBuildings() {
-    // Farm produces 1 food per 2 seconds
-    for (const building of this.buildings) {
-      if (building instanceof Farm) {
-        building.updateProduction(this);
-      }
+  tick() {
+    if (this.gameOver) return;
+    this.tickCount++;
+
+    const farms = this.countOf('farm');
+    const houses = this.countOf('house');
+
+    if (farms && this.tickCount % FARM_FOOD_EVERY === 0) addResource('food', farms);
+    if (houses && this.tickCount % HOUSE_WOOD_EVERY === 0) addResource('wood', houses);
+    if (houses && this.tickCount % HOUSE_STONE_EVERY === 0) addResource('stone', houses);
+
+    // ประชากรกินอาหาร (สะสมเศษทศนิยมไว้ก่อน แล้วค่อยหักเป็นจำนวนเต็ม)
+    this.foodEaten += this.getPopulation() * FOOD_PER_PERSON_PER_SEC;
+    if (this.foodEaten >= 1) {
+      const eaten = Math.floor(this.foodEaten);
+      this.foodEaten -= eaten;
+      removeResource('food', eaten);
     }
 
-    // House: no production, but increases population
-    for (const building of this.buildings) {
-      if (building instanceof House) {
-        building.update(this);
-      }
+    this.refreshUI();
+    this.checkGameState();
+  }
+
+  checkGameState() {
+    if (this.gameOver) return;
+    const food = getResource('food').current;
+
+    // แพ้: มีประชากรแต่อาหารหมด
+    if (this.getPopulation() > 0 && food <= 0) {
+      this.endGame(false);
+      return;
+    }
+    // ชนะ: มีสิ่งก่อสร้างครบและอาหารพอ
+    if (this.buildings.length >= WIN_BUILDINGS && food >= WIN_FOOD) {
+      this.endGame(true);
     }
   }
 
-  updateCamera() {
-    // Camera follows mouse cursor in game world
+  endGame(win) {
+    this.gameOver = true;
+
+    this.add
+      .rectangle(0, 0, 800, 600, 0x000000, 0.6)
+      .setOrigin(0, 0)
+      .setScrollFactor(0)
+      .setDepth(99);
+    this.add
+      .text(
+        400,
+        300,
+        win ? '🏆  ชนะ! จักรวรรดิของคุณเจริญรุ่งเรือง!' : '🏚️  เกมสิ้นสุด - อาหารหมด!',
+        {
+          fontFamily: FONT,
+          fontSize: '28px',
+          fontStyle: 'bold',
+          color: win ? '#34d399' : '#ef4444',
+        }
+      )
+      .setOrigin(0.5, 0.5)
+      .setScrollFactor(0)
+      .setDepth(100);
+
+    this.time.delayedCall(3000, () => this.scene.restart());
+  }
+
+  // ---------- วนทุกเฟรม ----------
+  update(time, delta) {
+    if (this.gameOver) return;
+
+    // เลื่อนกล้องด้วยลูกศร / WASD
+    const cam = this.cameras.main;
+    const step = (CAMERA_SPEED * delta) / 1000;
+    if (this.cursors.left.isDown || this.wasd.A.isDown) cam.scrollX -= step;
+    if (this.cursors.right.isDown || this.wasd.D.isDown) cam.scrollX += step;
+    if (this.cursors.up.isDown || this.wasd.W.isDown) cam.scrollY -= step;
+    if (this.cursors.down.isDown || this.wasd.S.isDown) cam.scrollY += step;
+
+    this.updatePreview();
+  }
+
+  // กรอบเงาแสดงตำแหน่งที่จะวาง (เขียว = วางได้, แดง = วางไม่ได้/ทรัพยากรไม่พอ)
+  updatePreview() {
+    if (!this.preview || !this.selectedBuilding) return;
+
     const pointer = this.input.activePointer;
-    if (pointer.active) {
-      const worldPoint = this.cameras.main.worldPoint;
-      // Get mouse position in world coordinates
-      const mx = pointer.x / this.cameras.main.scrollX;
-      const my = pointer.y / this.cameras.main.scrollY;
-      // The camera should look at where the mouse is pointing
-      // We need to compute target based on mouse
-      const targetX = this.grid.cells[0][0].x + (pointer.x / this.tileSize);
-      const targetY = this.grid.cells[0][0].y + (pointer.y / this.tileSize);
-      this.cameras.main.scrollX += (targetX - this.cameras.main.scrollX) * 0.05;
-      this.cameras.main.scrollY += (targetY - this.cameras.main.scrollY) * 0.05;
-    } else {
-      // Fallback: center on origin
-      const targetX = this.grid.cells[0][0].x;
-      const targetY = this.grid.cells[0][0].y;
-      this.cameras.main.scrollX += (targetX - this.cameras.main.scrollX) * 0.05;
-      this.cameras.main.scrollY += (targetY - this.cameras.main.scrollY) * 0.05;
-    }
-  }
+    const overHud = pointer.y < 36 || pointer.y > 520; // แถบบน / แถบล่าง
+    const gx = Math.floor(pointer.worldX / TILE);
+    const gy = Math.floor(pointer.worldY / TILE);
 
-  handleResize() {
-    // Nothing to do
+    if (overHud || !this.inBounds(gx, gy)) {
+      this.preview.setVisible(false);
+      return;
+    }
+
+    const def = BUILDINGS[this.selectedBuilding];
+    const { w, h } = def.area;
+    const ok = this.canPlace(gx, gy, w, h) && this.getMissing(def.cost).length === 0;
+
+    this.preview
+      .setPosition(gx * TILE, gy * TILE)
+      .setFillStyle(ok ? 0x34d399 : 0xef4444, 0.45)
+      .setVisible(true);
   }
 }
