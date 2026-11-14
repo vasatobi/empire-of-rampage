@@ -1,5 +1,5 @@
 // ===============================
-// ResourceBar — แถบแสดงทรัพยากรด้านบนจอ
+// ResourceBar — แถบทรัพยากร + ประชากร + ความสุข (Phase 7)
 // ===============================
 import { RESOURCES } from '../data/resources.js';
 
@@ -16,23 +16,23 @@ export class ResourceBar {
 
     // พื้นหลังแถบ (ติดกับหน้าจอ ไม่เลื่อนตามกล้อง)
     this.bg = scene.add
-      .rectangle(x, y, width, this.height, 0x0a0a0a, 0.85)
+      .rectangle(x, y, width, this.height, 0x0a0a0a, 0.9)
       .setOrigin(0, 0)
-      .setStrokeStyle(1, 0x1e293b)
+      .setStrokeStyle(1, 0x8b5a2b)
       .setScrollFactor(0)
       .setDepth(50);
 
     const keys = Object.keys(RESOURCES);
-    const slots = keys.length + 1; // ทรัพยากรทุกชนิด + ประชากร
+    const slots = keys.length + 2; // ทรัพยากรทุกชนิด + ประชากร + ความสุข
     const slotWidth = width / slots;
     const midY = y + this.height / 2;
 
     keys.forEach((key, i) => {
       const res = RESOURCES[key];
       const text = scene.add
-        .text(x + i * slotWidth + 12, midY, '', {
+        .text(x + i * slotWidth + 8, midY, '', {
           fontFamily: FONT,
-          fontSize: '15px',
+          fontSize: '13px',
           fontStyle: 'bold',
           color: res.color,
         })
@@ -43,9 +43,9 @@ export class ResourceBar {
     });
 
     this.popText = scene.add
-      .text(x + keys.length * slotWidth + 12, midY, '', {
+      .text(x + keys.length * slotWidth + 8, midY, '', {
         fontFamily: FONT,
-        fontSize: '15px',
+        fontSize: '13px',
         fontStyle: 'bold',
         color: '#e2e8f0',
       })
@@ -53,6 +53,18 @@ export class ResourceBar {
       .setScrollFactor(0)
       .setDepth(51);
     this.lastPop = null;
+
+    this.happyText = scene.add
+      .text(x + (keys.length + 1) * slotWidth + 8, midY, '', {
+        fontFamily: FONT,
+        fontSize: '13px',
+        fontStyle: 'bold',
+        color: '#4ade80',
+      })
+      .setOrigin(0, 0.5)
+      .setScrollFactor(0)
+      .setDepth(51);
+    this.lastHappy = null;
 
     this.update();
   }
@@ -69,9 +81,20 @@ export class ResourceBar {
     });
 
     const pop = stats.population ?? 0;
-    if (this.lastPop !== pop) {
-      this.lastPop = pop;
-      this.popText.setText(`👥 ประชากร ${pop.toLocaleString()}`);
+    const cap = stats.capacity ?? 0;
+    const popLabel = `👥 ${pop}/${cap}`;
+    if (this.lastPop !== popLabel) {
+      this.lastPop = popLabel;
+      this.popText.setText(popLabel);
+    }
+
+    const happy = stats.happiness ?? 0;
+    const face = happy >= 70 ? '😊' : happy >= 40 ? '😐' : '😡';
+    const happyLabel = `${face} ${happy}`;
+    if (this.lastHappy !== happyLabel) {
+      this.lastHappy = happyLabel;
+      this.happyText.setText(happyLabel);
+      this.happyText.setColor(happy >= 70 ? '#4ade80' : happy >= 40 ? '#facc15' : '#ef4444');
     }
   }
 
@@ -79,6 +102,7 @@ export class ResourceBar {
     this.items.forEach((item) => item.text.destroy());
     this.items = [];
     if (this.popText) this.popText.destroy();
+    if (this.happyText) this.happyText.destroy();
     if (this.bg) this.bg.destroy();
   }
 }

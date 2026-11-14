@@ -13,20 +13,20 @@ import {
   removeResource,
 } from '../data/resources.js';
 import { BUILDINGS } from '../data/buildings.js';
+import { MARKET_CONFIG } from '../data/market.js';
+import { PopulationSystem } from '../systems/PopulationSystem.js';
+import { EconomySystem } from '../systems/EconomySystem.js';
+import { MarketSystem } from '../systems/MarketSystem.js';
 import { ResourceBar } from '../ui/ResourceBar.js';
+import { EconomyBar } from '../ui/EconomyBar.js';
 import { BuildingMenu } from '../ui/BuildingMenu.js';
+import { MarketPanel } from '../ui/MarketPanel.js';
 
 // --- ค่าที่ปรับได้ ---
 const GRID_SIZE = 64;          // แผนที่ 64x64 ช่อง
 const TILE = 32;               // ช่องละ 32 px
 const WORLD = GRID_SIZE * TILE;
 const CAMERA_SPEED = 500;      // px ต่อวินาที
-
-const POP_PER_HOUSE = 4;
-const FOOD_PER_PERSON_PER_SEC = 0.05; // คนละ 1 อาหารต่อ 20 วินาที
-const FARM_FOOD_EVERY = 2;     // ฟาร์มละ 1 อาหารต่อ 2 วินาที
-const HOUSE_WOOD_EVERY = 4;    // บ้านละ 1 ไม้ต่อ 4 วินาที   (ค่าที่เพิ่มเอง ปรับ/ลบได้)
-const HOUSE_STONE_EVERY = 8;   // บ้านละ 1 หินต่อ 8 วินาที   (ค่าที่เพิ่มเอง ปรับ/ลบได้)
 
 const WIN_BUILDINGS = 5;
 const WIN_FOOD = 1000;
@@ -48,9 +48,14 @@ export class GameScene extends Phaser.Scene {
     this.buildings = [];
     this.occupancy = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(null));
     this.tickCount = 0;
-    this.foodEaten = 0;
+    this.taxRate = 1;
 
     resetResources(); // ต้องมาก่อน createUI เสมอ
+
+    // ระบบ Phase 7: ประชากร / เศรษฐกิจ / ตลาด
+    this.populationSystem = new PopulationSystem();
+    this.economySystem = new EconomySystem();
+    this.marketSystem = new MarketSystem();
 
     this.createTerrain();
     this.createUI();
@@ -85,13 +90,15 @@ export class GameScene extends Phaser.Scene {
   // ---------- UI ----------
   createUI() {
     this.resourceBar = new ResourceBar(this, 0, 0, 800);
+    this.economyBar = new EconomyBar(this, 0, 36, 800, (rate) => this.setTaxRate(rate));
     this.buildingMenu = new BuildingMenu(this, 400, 592, (id) => this.selectBuilding(id));
+    this.marketPanel = new MarketPanel(this, 800, 96, (type, key) => this.handleTrade(type, key));
 
     this.hint = this.add
       .text(
         400,
         526,
-        'ลูกศร/WASD: เลื่อนกล้อง  |  คลิกซ้าย: วาง  |  คลิกขวา: ลบ  |  Esc: ยกเลิก',
+        'ลูกศร/WASD: เลื่อนกล้อง  |  คลิกซ้าย: วาง  |  คลิกขวา: ลบ  |  M: ตลาด  |  Esc: ยกเลิก',
         { fontFamily: FONT, fontSize: '12px', color: '#9ca3af' }
       )
       .setOrigin(0.5, 1)
@@ -99,8 +106,34 @@ export class GameScene extends Phaser.Scene {
       .setDepth(51);
   }
 
+  setTaxRate(rate) {
+    this.taxRate = rate;
+    this.refreshUI();
+  }
+
+  toggleMarket() {
+    this.marketPanel.toggle();
+    this.refreshUI();
+  }
+
   refreshUI() {
-    this.resourceBar.update({ population: this.getPopulation() });
+    this.resourceBar.update({
+      population: this.getPopulation(),
+      capacity: this.getCapacity(),
+      happiness: this.getHappiness(),
+    });
+    this.economyBar.update({
+      income: this.economySystem.lastIncomePerMin,
+      expense: this.economySystem.lastExpensePerMin,
+      net: this.economySystem.lastNetPerMin,
+      taxRate: this.taxRate,
+    });
+    if (this.marketPanel.isVisible()) {
+      this.marketPanel.update(
+        this.marketSystem.getPrices(this.countOf('road')),
+        getResource('gold').current ?? 0
+      );
+    }
   }
 
   // ---------- กล้อง ----------
@@ -119,10 +152,15 @@ export class GameScene extends Phaser.Scene {
     this.input.keyboard.on('keydown-H', () => this.selectBuilding('house'));
     this.input.keyboard.on('keydown-F', () => this.selectBuilding('farm'));
     this.input.keyboard.on('keydown-R', () => this.selectBuilding('road'));
+    this.input.keyboard.on('keydown-L', () => this.selectBuilding('lumberjack'));
+    this.input.keyboard.on('keydown-Q', () => this.selectBuilding('quarry'));
     this.input.keyboard.on('keydown-ONE', () => this.selectBuilding('house'));
     this.input.keyboard.on('keydown-TWO', () => this.selectBuilding('farm'));
     this.input.keyboard.on('keydown-THREE', () => this.selectBuilding('road'));
+    this.input.keyboard.on('keydown-FOUR', () => this.selectBuilding('lumberjack'));
+    this.input.keyboard.on('keydown-FIVE', () => this.selectBuilding('quarry'));
     this.input.keyboard.on('keydown-ESC', () => this.selectBuilding(null));
+    this.input.keyboard.on('keydown-M', () => this.toggleMarket());
 
     this.input.on('pointerdown', this.handlePointerDown, this);
   }
@@ -270,36 +308,94 @@ export class GameScene extends Phaser.Scene {
     this.time.delayedCall(1500, () => msg.destroy());
   }
 
-  // ---------- เศรษฐกิจ ----------
+  // ---------- ระบบ ----------
   countOf(id) {
     return this.buildings.filter((b) => b.id === id).length;
   }
 
+  getCounts() {
+    const counts = {};
+    this.buildings.forEach((b) => {
+      counts[b.id] = (counts[b.id] || 0) + 1;
+    });
+    return counts;
+  }
+
   getPopulation() {
-    return this.countOf('house') * POP_PER_HOUSE;
+    return Math.floor(this.populationSystem.population);
+  }
+
+  getCapacity() {
+    return this.populationSystem.capacity;
+  }
+
+  getHappiness() {
+    return Math.round(this.populationSystem.happiness);
   }
 
   tick() {
     if (this.gameOver) return;
     this.tickCount++;
 
-    const farms = this.countOf('farm');
-    const houses = this.countOf('house');
+    const counts = this.getCounts();
 
-    if (farms && this.tickCount % FARM_FOOD_EVERY === 0) addResource('food', farms);
-    if (houses && this.tickCount % HOUSE_WOOD_EVERY === 0) addResource('wood', houses);
-    if (houses && this.tickCount % HOUSE_STONE_EVERY === 0) addResource('stone', houses);
+    // 1) ผลิตทรัพยากรจากสิ่งก่อสร้าง
+    Object.entries(BUILDINGS).forEach(([id, def]) => {
+      if (!def.produce) return;
+      const n = counts[id] || 0;
+      if (n > 0 && this.tickCount % def.produceEvery === 0) {
+        Object.entries(def.produce).forEach(([key, amount]) => addResource(key, amount * n));
+      }
+    });
 
-    // ประชากรกินอาหาร (สะสมเศษทศนิยมไว้ก่อน แล้วค่อยหักเป็นจำนวนเต็ม)
-    this.foodEaten += this.getPopulation() * FOOD_PER_PERSON_PER_SEC;
-    if (this.foodEaten >= 1) {
-      const eaten = Math.floor(this.foodEaten);
-      this.foodEaten -= eaten;
-      removeResource('food', eaten);
-    }
+    // 2) ประชากร + ความสุข + การกินอาหาร
+    const capacity = (counts.house || 0) * (BUILDINGS.house.capacity || 0);
+    const jobs = ['farm', 'lumberjack', 'quarry'].reduce(
+      (sum, id) => sum + (counts[id] || 0) * (BUILDINGS[id].jobs || 0),
+      0
+    );
+    this.populationSystem.update(1000, {
+      houses: counts.house,
+      jobs,
+      taxRate: this.taxRate,
+      capacity,
+    });
+
+    // 3) เศรษฐกิจ: รายรับ/รายจ่าย
+    this.economySystem.update(1000, {
+      population: this.getPopulation(),
+      buildings: this.buildings.map((b) => ({ upkeep: BUILDINGS[b.id]?.upkeep || 0 })),
+      taxRate: this.taxRate,
+      roadCount: counts.road,
+    });
+
+    // 4) ตลาด: ราคาคืนตัว
+    this.marketSystem.update(1000, counts.road);
 
     this.refreshUI();
     this.checkGameState();
+  }
+
+  // ซื้อ/ขายในตลาด (type = 'buy' | 'sell')
+  handleTrade(type, key) {
+    const amount = MARKET_CONFIG.tradeAmount;
+    const result =
+      type === 'buy'
+        ? this.marketSystem.buy(key, amount, this.countOf('road'))
+        : this.marketSystem.sell(key, amount);
+
+    if (!result.ok) {
+      this.marketPanel.showMessage(result.reason, false);
+      return;
+    }
+
+    const res = getResource(key);
+    const msg =
+      type === 'buy'
+        ? `ซื้อ ${res.name} ${amount} หน่วย (-${result.cost} ทอง)`
+        : `ขาย ${res.name} ${amount} หน่วย (+${result.gain} ทอง)`;
+    this.marketPanel.showMessage(msg, true);
+    this.refreshUI();
   }
 
   checkGameState() {
@@ -364,7 +460,7 @@ export class GameScene extends Phaser.Scene {
     if (!this.preview || !this.selectedBuilding) return;
 
     const pointer = this.input.activePointer;
-    const overHud = pointer.y < 36 || pointer.y > 520; // แถบบน / แถบล่าง
+    const overHud = pointer.y < 62 || pointer.y > 520; // แถบบน (ทรัพยากร+เศรษฐกิจ) / แถบล่าง
     const gx = Math.floor(pointer.worldX / TILE);
     const gy = Math.floor(pointer.worldY / TILE);
 

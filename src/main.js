@@ -27,3 +27,6 @@ const config = {
 };
 
 const game = new Game(config);
+
+// debug handle สำหรับทดสอบอัตโนมัติ (เปิด console แล้วใช้ window.__game ได้)
+window.__game = game;

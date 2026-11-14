@@ -60,7 +60,7 @@ export class MainMenu extends Scene {
       });
 
     // Instructions
-    const instructions = this.add.text(400, 480, 'H: House  |  F: Farm  |  R: Road  |  Right-click: Remove', {
+    const instructions = this.add.text(400, 480, 'H/F/R/L/Q: สิ่งก่อสร้าง  |  M: ตลาด  |  คลิกขวา: ลบ', {
       fontFamily: 'Courier New, monospace',
       fontSize: '16px',
       color: '#9ca3af',

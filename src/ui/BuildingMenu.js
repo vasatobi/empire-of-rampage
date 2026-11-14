@@ -1,15 +1,14 @@
 // ===============================
-// BuildingMenu — แถบเลือกสิ่งก่อสร้างด้านล่างจอ
+// BuildingMenu — แถบเลือกสิ่งก่อสร้างด้านล่างจอ (Phase 7)
 // ===============================
 import { BUILDINGS } from '../data/buildings.js';
 import { RESOURCES } from '../data/resources.js';
 
 const FONT = 'Courier New, monospace';
-const HOTKEYS = { house: 'H', farm: 'F', road: 'R' };
 
-const BUTTON_W = 180;
+const BUTTON_W = 140;
 const BUTTON_H = 58;
-const GAP = 12;
+const GAP = 8;
 
 export class BuildingMenu {
   // centerX = กึ่งกลางแนวนอน, bottomY = ขอบล่างของแถบ (พิกัดหน้าจอ)
@@ -31,18 +30,18 @@ export class BuildingMenu {
 
       // คลิกทะลุปุ่มลงไปวางของบนแผนที่ไม่ได้ เพราะปุ่มเป็น interactive object
       const bg = scene.add
-        .rectangle(bx, top, BUTTON_W, BUTTON_H, 0x0a0a0a, 0.9)
+        .rectangle(bx, top, BUTTON_W, BUTTON_H, 0x0a0a0a, 0.92)
         .setOrigin(0, 0)
-        .setStrokeStyle(2, 0x1e293b)
+        .setStrokeStyle(2, 0x8b5a2b)
         .setScrollFactor(0)
         .setDepth(50)
         .setInteractive({ useHandCursor: true });
 
-      const hotkey = HOTKEYS[id] ? ` [${HOTKEYS[id]}]` : '';
+      const hotkey = def.hotkey ? ` [${def.hotkey}]` : '';
       const title = scene.add
-        .text(bx + 10, top + 8, `${def.icon} ${def.name}${hotkey}`, {
+        .text(bx + 8, top + 7, `${def.icon} ${def.name}${hotkey}`, {
           fontFamily: FONT,
-          fontSize: '15px',
+          fontSize: '14px',
           fontStyle: 'bold',
           color: '#e2e8f0',
         })
@@ -53,23 +52,33 @@ export class BuildingMenu {
         .map(([key, amount]) => `${RESOURCES[key]?.name ?? key} ${amount}`)
         .join('  ');
       const cost = scene.add
-        .text(bx + 10, top + 32, costLabel, {
+        .text(bx + 8, top + 30, costLabel, {
           fontFamily: FONT,
-          fontSize: '14px',
+          fontSize: '12px',
           color: '#9ca3af',
         })
         .setScrollFactor(0)
         .setDepth(51);
 
+      const upkeep = def.upkeep ? `ค่าบำรุง ${def.upkeep}/นาที` : '';
+      const info = scene.add
+        .text(bx + 8, top + 45, upkeep, {
+          fontFamily: FONT,
+          fontSize: '10px',
+          color: '#6b7280',
+        })
+        .setScrollFactor(0)
+        .setDepth(51);
+
       bg.on('pointerover', () => {
-        if (this.selectedBuilding !== id) bg.setFillStyle(0x1e293b, 0.95);
+        if (this.selectedBuilding !== id) bg.setFillStyle(0x2a1f0e, 0.95);
       });
       bg.on('pointerout', () => {
-        if (this.selectedBuilding !== id) bg.setFillStyle(0x0a0a0a, 0.9);
+        if (this.selectedBuilding !== id) bg.setFillStyle(0x0a0a0a, 0.92);
       });
       bg.on('pointerdown', () => this.onSelect(id));
 
-      this.buttons.push({ id, bg, title, cost });
+      this.buttons.push({ id, bg, title, cost, info });
     });
   }
 
@@ -78,8 +87,8 @@ export class BuildingMenu {
     this.selectedBuilding = id;
     this.buttons.forEach((b) => {
       const active = b.id === id;
-      b.bg.setStrokeStyle(2, active ? 0xf59e0b : 0x1e293b);
-      b.bg.setFillStyle(active ? 0x1e293b : 0x0a0a0a, active ? 0.95 : 0.9);
+      b.bg.setStrokeStyle(2, active ? 0xf59e0b : 0x8b5a2b);
+      b.bg.setFillStyle(active ? 0x4a3517 : 0x0a0a0a, active ? 0.95 : 0.92);
     });
   }
 
@@ -88,6 +97,7 @@ export class BuildingMenu {
       b.bg.destroy();
       b.title.destroy();
       b.cost.destroy();
+      b.info.destroy();
     });
     this.buttons = [];
   }
