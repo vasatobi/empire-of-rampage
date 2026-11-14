@@ -116,7 +116,13 @@ export class GameScene extends Phaser.Scene {
     this.refreshUI();
   }
 
+  refreshCapacity() {
+    const counts = this.getCounts();
+    this.populationSystem.capacity = (counts.house || 0) * (BUILDINGS.house.capacity || 0);
+  }
+
   refreshUI() {
+    this.refreshCapacity();
     this.resourceBar.update({
       population: this.getPopulation(),
       capacity: this.getCapacity(),
@@ -382,7 +388,7 @@ export class GameScene extends Phaser.Scene {
     const result =
       type === 'buy'
         ? this.marketSystem.buy(key, amount, this.countOf('road'))
-        : this.marketSystem.sell(key, amount);
+        : this.marketSystem.sell(key, amount, this.countOf('road'));
 
     if (!result.ok) {
       this.marketPanel.showMessage(result.reason, false);

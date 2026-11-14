@@ -74,10 +74,10 @@ export class MarketSystem {
     return { ok: true, cost: check.cost };
   }
 
-  sell(key, amount) {
+  sell(key, amount, roadCount = 0) {
     const check = this.canSell(key, amount);
     if (!check.ok) return check;
-    const price = this.getPrices()[key];
+    const price = this.getPrices(roadCount)[key];
     const gain = price.sell * amount;
     removeResource(key, amount);
     addResource('gold', gain);
