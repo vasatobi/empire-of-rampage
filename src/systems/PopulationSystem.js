@@ -63,4 +63,12 @@ export class PopulationSystem {
       eaten,
     };
   }
+
+  // เพิ่มเท่านั้น: คืนค่าประชากรจากเซฟ (clamp ต่อความจุปัจจุบัน) ไม่เปลี่ยนพฤติกรรมเดิม
+  restore(game = {}) {
+    const p = game && game.population;
+    if (typeof p === 'number' && Number.isFinite(p)) {
+      this.population = Math.max(0, Math.min(this.capacity || 0, p));
+    }
+  }
 }

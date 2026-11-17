@@ -21,6 +21,7 @@ import { ResourceBar } from '../ui/ResourceBar.js';
 import { EconomyBar } from '../ui/EconomyBar.js';
 import { BuildingMenu } from '../ui/BuildingMenu.js';
 import { MarketPanel } from '../ui/MarketPanel.js';
+import { SAVE_VERSION, writeSave, readSave, hasSave } from '../systems/save-system.js';
 
 // --- ค่าที่ปรับได้ ---
 const GRID_SIZE = 64;          // แผนที่ 64x64 ช่อง
@@ -31,16 +32,34 @@ const CAMERA_SPEED = 500;      // px ต่อวินาที
 const WIN_BUILDINGS = 5;
 const WIN_FOOD = 1000;
 
+const SAVE_INTERVAL_MS = 60000;  // บันทึกอัตโนมัติทุก 60 วินาที
+const SAVE_THROTTLE_MS = 2000;   // กันบันทึกถี่หลังวาง/ลบอาคาร
+
 const FONT = 'Courier New, monospace';
 
 const hex = (s) => parseInt(String(s).replace('#', ''), 16);
+
+const clampNum = (v, lo, hi) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return lo;
+  return Math.max(lo, Math.min(hi, n));
+};
+
+// เข้าถึง localStorage เฉพาะในเบราว์เซอร์ (try/catch เฉพาะจุดนี้)
+function getStorage() {
+  try {
+    return typeof window !== 'undefined' ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
 
 export class GameScene extends Phaser.Scene {
   constructor() {
     super('GameScene');
   }
 
-  create() {
+  create(data = {}) {
     // สถานะทั้งหมดต้องตั้งใหม่ทุกครั้งที่ create() (รวมถึงตอน scene.restart)
     this.gameOver = false;
     this.selectedBuilding = null;
@@ -50,9 +69,20 @@ export class GameScene extends Phaser.Scene {
     this.tickCount = 0;
     this.taxRate = 1;
 
+    // โหมด: 'continue' โหลดเซฟ, 'new' เริ่มเกมใหม่ (โหลดเริ่มฉากใหม่เท่านั้น ไม่โหลดทับฉากที่กำลังเล่น)
+    this.mode = data && data.mode === 'continue' ? 'continue' : 'new';
+    this.hasProgress = false;
+    this.lastSaveAt = 0;
+    this.saveNotice = null;
+    this.saveTimer = null;
+    this.menuOpen = false;
+    this.tickTimer = null;
+    this.menuObjects = [];
+    this.menuButtons = {};
+
     resetResources(); // ต้องมาก่อน createUI เสมอ
 
-    // ระบบ Phase 7: ประชากร / เศรษฐกิจ / ตลาด
+    // ระบบ Phase 7: ประชากร / เศรษฐกิจ / ตลาด (สร้างใหม่ทุก create)
     this.populationSystem = new PopulationSystem();
     this.economySystem = new EconomySystem();
     this.marketSystem = new MarketSystem();
@@ -62,17 +92,317 @@ export class GameScene extends Phaser.Scene {
     this.setupCamera();
     this.setupInput();
 
-    // ฟาร์มเริ่มต้นกลางแผนที่
+    if (this.mode === 'continue') {
+      if (this.loadFromSave()) {
+        this.hasProgress = true;
+      } else {
+        this.startNewGame();
+        this.showSaveNotice('ข้อมูลบันทึกเสียหาย เริ่มเกมใหม่');
+      }
+    } else {
+      this.startNewGame();
+    }
+
+    // เศรษฐกิจเดินทุก 1 วินาที
+    this.tickTimer = this.time.addEvent({ delay: 1000, loop: true, callback: this.tick, callbackScope: this });
+
+    // บันทึกอัตโนมัติทุก 60 วินาที
+    this.saveTimer = this.time.addEvent({
+      delay: SAVE_INTERVAL_MS,
+      loop: true,
+      callback: () => this.autoSave(false, true),
+      callbackScope: this,
+    });
+
+    // บันทึกตอนปิด/ซ่อนหน้า
+    this.onVisibility = () => {
+      if (document.hidden) this.autoSave(false, true);
+    };
+    this.onPageHide = () => this.autoSave(false, true);
+    document.addEventListener('visibilitychange', this.onVisibility);
+    window.addEventListener('pagehide', this.onPageHide);
+    this.events.once('shutdown', this.cleanupSaveListeners, this);
+
+    this.refreshUI();
+  }
+
+  // เริ่มเกมใหม่: รีเซ็ตทุกอย่างแล้ววางฟาร์มเริ่มต้น
+  startNewGame() {
+    this.tickCount = 0;
+    this.taxRate = 1;
+    this.buildings = [];
+    this.occupancy = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(null));
+    this.hasProgress = false;
+    resetResources();
+    this.populationSystem = new PopulationSystem();
+    this.economySystem = new EconomySystem();
+    this.marketSystem = new MarketSystem();
+
     const start = this.placeBuilding('farm', 30, 30);
     this.cameras.main.centerOn(
       start.gx * TILE + (start.w * TILE) / 2,
       start.gy * TILE + (start.h * TILE) / 2
     );
+  }
 
-    // เศรษฐกิจเดินทุก 1 วินาที
-    this.time.addEvent({ delay: 1000, loop: true, callback: this.tick, callbackScope: this });
+  // โหลดเซฟ (เรียกจาก create เท่านั้น) คืน true ถ้าสำเร็จ
+  loadFromSave() {
+    const storage = getStorage();
+    if (!storage) return false;
+    const res = readSave(storage);
+    if (!res.ok) return false;
+    const g = res.state.game;
 
-    this.refreshUI();
+    // 1) ทรัพยากร (resetResources ถูกเรียกไปแล้ว)
+    for (const k of Object.keys(RESOURCES)) {
+      const v = g.resources ? g.resources[k] : undefined;
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        RESOURCES[k].current = Math.max(0, Math.min(RESOURCES[k].max, v));
+      }
+    }
+
+    // 2) tickCount / taxRate
+    this.tickCount = Number.isInteger(g.tickCount) && g.tickCount >= 0 ? g.tickCount : 0;
+    this.taxRate =
+      typeof g.taxRate === 'number' && [0.5, 1, 1.5].includes(g.taxRate) ? g.taxRate : 1;
+
+    // 3) วางอาคารทีลัง: canPlace ก่อน placeBuilding ทุกครั้ง
+    const placed = [];
+    for (const b of g.buildings) {
+      const def = BUILDINGS[b.id];
+      if (!def) {
+        this.cancelRestore(placed);
+        return false;
+      }
+      if (!this.canPlace(b.gx, b.gy, def.area.w, def.area.h)) {
+        this.cancelRestore(placed);
+        return false;
+      }
+      placed.push(this.placeBuilding(b.id, b.gx, b.gy));
+    }
+
+    // 4) กล้อง (clamp ไม่ปฏิเสธ)
+    this.cameras.main.scrollX = clampNum(g.camera && g.camera.x, 0, WORLD);
+    this.cameras.main.scrollY = clampNum(g.camera && g.camera.y, 0, WORLD);
+
+    // 5) ความจุก่อน แล้วจึงตั้งประชากร/ตลาด
+    this.refreshCapacity();
+    this.populationSystem.restore(g);
+    this.marketSystem.restore(g.market);
+
+    return true;
+  }
+
+  // ยกเลิก restore ที่ล้มเหลว: ทำลายอาคารที่วางไป รีเซ็ตระบบ ห้ามแตะไฟล์เซฟ
+  cancelRestore(placed) {
+    for (const b of placed) {
+      for (let y = b.gy; y < b.gy + b.h; y++) {
+        for (let x = b.gx; x < b.gx + b.w; x++) {
+          if (this.occupancy[y] && this.occupancy[y][x] === b) this.occupancy[y][x] = null;
+        }
+      }
+      b.rect.destroy();
+      b.icon.destroy();
+    }
+    this.buildings = [];
+    this.tickCount = 0;
+    this.taxRate = 1;
+    resetResources();
+    this.populationSystem = new PopulationSystem();
+    this.economySystem = new EconomySystem();
+    this.marketSystem = new MarketSystem();
+  }
+
+  // สร้าง state สำหรับเซฟ (เฉพาะข้อมูลหลัก)
+  getSaveState() {
+    const resources = {};
+    for (const k of Object.keys(RESOURCES)) resources[k] = RESOURCES[k].current ?? 0;
+    return {
+      version: SAVE_VERSION,
+      savedAt: new Date().toISOString(),
+      game: {
+        resources,
+        buildings: this.buildings.map((b) => ({ id: b.id, gx: b.gx, gy: b.gy })),
+        tickCount: this.tickCount,
+        taxRate: this.taxRate,
+        population: this.populationSystem.population,
+        market: { priceIndex: { ...this.marketSystem.priceIndex } },
+        camera: { x: this.cameras.main.scrollX, y: this.cameras.main.scrollY },
+      },
+    };
+  }
+
+  // manual = ผู้เล่นกดบันทึกเอง, force = ข้าม throttle (ปิด/ซ่อนหน้า)
+  autoSave(manual = false, force = false) {
+    if (this.gameOver) return { ok: false, reason: 'game-over' };
+    const storage = getStorage();
+    if (!storage) {
+      this.showSaveNotice('บันทึกไม่สำเร็จ');
+      return { ok: false, reason: 'no-storage' };
+    }
+    if (!this.hasProgress) {
+      if (manual && hasSave(storage)) {
+        this.showSaveNotice('ยังไม่มีความคืบหน้าใหม่ให้บันทึก');
+        return { ok: false, reason: 'no-progress' };
+      }
+      if (!manual) return { ok: false, reason: 'no-progress' };
+    }
+    const now = Date.now();
+    if (!force && now - this.lastSaveAt < SAVE_THROTTLE_MS) {
+      return { ok: false, reason: 'throttle' };
+    }
+    const result = writeSave(storage, this.getSaveState());
+    if (!result.ok) {
+      this.showSaveNotice('บันทึกไม่สำเร็จ');
+      return result;
+    }
+    this.lastSaveAt = now;
+    this.showSaveNotice(manual ? 'บันทึกแล้ว' : 'บันทึกอัตโนมัติแล้ว');
+    return result;
+  }
+
+  // ข้อความสั้นมุมจอ หายเองใน 1.5 วิ
+  showSaveNotice(msg) {
+    if (this.saveNotice) {
+      this.saveNotice.destroy();
+      this.saveNotice = null;
+    }
+    const t = this.add
+      .text(792, 60, msg, {
+        fontFamily: FONT,
+        fontSize: '13px',
+        fontStyle: 'bold',
+        color: '#f59e0b',
+        backgroundColor: '#0a0a0a',
+        padding: { x: 8, y: 4 },
+      })
+      .setOrigin(1, 0)
+      .setScrollFactor(0)
+      .setDepth(120);
+    this.saveNotice = t;
+    this.time.delayedCall(1500, () => {
+      if (this.saveNotice === t) {
+        t.destroy();
+        this.saveNotice = null;
+      }
+    });
+  }
+
+  // ล้าง listener ตอนฉากปิด (กันซ้ำเมื่อ scene.restart); ตัวจับเวลาของ scene ถูกทำลายเอง
+  cleanupSaveListeners() {
+    document.removeEventListener('visibilitychange', this.onVisibility);
+    window.removeEventListener('pagehide', this.onPageHide);
+    if (this.saveNotice) {
+      this.saveNotice.destroy();
+      this.saveNotice = null;
+    }
+  }
+
+  // ---------- เมนูหยุดเกม ----------
+  createPauseMenu() {
+    const add = (o) => {
+      this.menuObjects.push(o);
+      return o;
+    };
+
+    // พื้นหลังเต็มจอ (interactive กันคลิกทะลุลงแผนที่)
+    add(
+      this.add
+        .rectangle(0, 0, 800, 600, 0x000000, 0.72)
+        .setOrigin(0, 0)
+        .setScrollFactor(0)
+        .setDepth(90)
+        .setInteractive()
+    );
+    add(
+      this.add
+        .rectangle(400, 300, 340, 320, 0x1a1207, 0.98)
+        .setOrigin(0.5)
+        .setStrokeStyle(2, 0xf59e0b)
+        .setScrollFactor(0)
+        .setDepth(91)
+    );
+    add(
+      this.add
+        .text(400, 178, 'เมนู', {
+          fontFamily: FONT,
+          fontSize: '24px',
+          fontStyle: 'bold',
+          color: '#f59e0b',
+        })
+        .setOrigin(0.5)
+        .setScrollFactor(0)
+        .setDepth(92)
+    );
+
+    const mk = (key, y, label, cb) => {
+      const bg = add(
+        this.add
+          .rectangle(400, y, 240, 40, 0x2a1f0e, 1)
+          .setOrigin(0.5)
+          .setStrokeStyle(1, 0x8b5a2b)
+          .setScrollFactor(0)
+          .setDepth(92)
+      );
+      const text = add(
+        this.add
+          .text(400, y, label, {
+            fontFamily: FONT,
+            fontSize: '16px',
+            color: '#e2e8f0',
+          })
+          .setOrigin(0.5)
+          .setScrollFactor(0)
+          .setDepth(93)
+      );
+      bg.setInteractive({ useHandCursor: true });
+      bg.on('pointerover', () => bg.setFillStyle(0x4a3517, 1));
+      bg.on('pointerout', () => bg.setFillStyle(0x2a1f0e, 1));
+      bg.on('pointerdown', cb);
+      this.menuButtons[key] = { bg, text };
+    };
+
+    mk('resume', 240, 'เล่นต่อ', () => this.toggleMenu(false));
+    mk('save', 295, 'บันทึกเกม', () => this.manualSave());
+    mk('load', 350, 'โหลดเกม', () => this.loadFromMenu());
+    mk('main', 405, 'กลับเมนูหลัก', () => this.backToMainMenu());
+
+    this.setMenuVisible(false);
+  }
+
+  setMenuVisible(v) {
+    this.menuObjects.forEach((o) => {
+      o.setVisible(v);
+      if (o.input) o.input.enabled = v;
+    });
+  }
+
+  toggleMenu(force) {
+    if (this.gameOver) return;
+    const next = force !== undefined ? force : !this.menuOpen;
+    this.menuOpen = next;
+    if (next && this.marketPanel.isVisible()) this.marketPanel.toggle(false);
+    this.setMenuVisible(next);
+    if (this.tickTimer) this.tickTimer.paused = next;
+  }
+
+  manualSave() {
+    this.autoSave(true, true);
+  }
+
+  loadFromMenu() {
+    const storage = getStorage();
+    if (!storage || !hasSave(storage)) {
+      this.showSaveNotice('ไม่มีข้อมูลบันทึก');
+      return;
+    }
+    this.toggleMenu(false);
+    this.scene.restart({ mode: 'continue' });
+  }
+
+  backToMainMenu() {
+    this.toggleMenu(false);
+    this.scene.start('MainMenu');
   }
 
   // ---------- แผนที่ ----------
@@ -93,6 +423,24 @@ export class GameScene extends Phaser.Scene {
     this.economyBar = new EconomyBar(this, 0, 36, 800, (rate) => this.setTaxRate(rate));
     this.buildingMenu = new BuildingMenu(this, 400, 592, (id) => this.selectBuilding(id));
     this.marketPanel = new MarketPanel(this, 800, 96, (type, key) => this.handleTrade(type, key));
+    this.createPauseMenu();
+
+    this.menuBtn = this.add
+      .text(792, 532, 'เมนู [P]', {
+        fontFamily: FONT,
+        fontSize: '13px',
+        fontStyle: 'bold',
+        color: '#f59e0b',
+        backgroundColor: '#0a0a0a',
+        padding: { x: 6, y: 3 },
+      })
+      .setOrigin(1, 1)
+      .setScrollFactor(0)
+      .setDepth(51)
+      .setInteractive({ useHandCursor: true })
+      .on('pointerdown', () => {
+        if (!this.menuOpen) this.toggleMenu(true);
+      });
 
     this.hint = this.add
       .text(
@@ -107,6 +455,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   setTaxRate(rate) {
+    if (this.menuOpen) return;
     this.taxRate = rate;
     this.refreshUI();
   }
@@ -155,24 +504,25 @@ export class GameScene extends Phaser.Scene {
     this.cursors = this.input.keyboard.createCursorKeys();
     this.wasd = this.input.keyboard.addKeys('W,A,S,D');
 
-    this.input.keyboard.on('keydown-H', () => this.selectBuilding('house'));
-    this.input.keyboard.on('keydown-F', () => this.selectBuilding('farm'));
-    this.input.keyboard.on('keydown-R', () => this.selectBuilding('road'));
-    this.input.keyboard.on('keydown-L', () => this.selectBuilding('lumberjack'));
-    this.input.keyboard.on('keydown-Q', () => this.selectBuilding('quarry'));
-    this.input.keyboard.on('keydown-ONE', () => this.selectBuilding('house'));
-    this.input.keyboard.on('keydown-TWO', () => this.selectBuilding('farm'));
-    this.input.keyboard.on('keydown-THREE', () => this.selectBuilding('road'));
-    this.input.keyboard.on('keydown-FOUR', () => this.selectBuilding('lumberjack'));
-    this.input.keyboard.on('keydown-FIVE', () => this.selectBuilding('quarry'));
-    this.input.keyboard.on('keydown-ESC', () => this.selectBuilding(null));
-    this.input.keyboard.on('keydown-M', () => this.toggleMarket());
+    this.input.keyboard.on('keydown-H', () => { if (!this.menuOpen) this.selectBuilding('house'); });
+    this.input.keyboard.on('keydown-F', () => { if (!this.menuOpen) this.selectBuilding('farm'); });
+    this.input.keyboard.on('keydown-R', () => { if (!this.menuOpen) this.selectBuilding('road'); });
+    this.input.keyboard.on('keydown-L', () => { if (!this.menuOpen) this.selectBuilding('lumberjack'); });
+    this.input.keyboard.on('keydown-Q', () => { if (!this.menuOpen) this.selectBuilding('quarry'); });
+    this.input.keyboard.on('keydown-ONE', () => { if (!this.menuOpen) this.selectBuilding('house'); });
+    this.input.keyboard.on('keydown-TWO', () => { if (!this.menuOpen) this.selectBuilding('farm'); });
+    this.input.keyboard.on('keydown-THREE', () => { if (!this.menuOpen) this.selectBuilding('road'); });
+    this.input.keyboard.on('keydown-FOUR', () => { if (!this.menuOpen) this.selectBuilding('lumberjack'); });
+    this.input.keyboard.on('keydown-FIVE', () => { if (!this.menuOpen) this.selectBuilding('quarry'); });
+    this.input.keyboard.on('keydown-ESC', () => { if (!this.menuOpen) this.selectBuilding(null); });
+    this.input.keyboard.on('keydown-M', () => { if (!this.menuOpen) this.toggleMarket(); });
+    this.input.keyboard.on('keydown-P', () => { if (!this.gameOver) this.toggleMenu(); });
 
     this.input.on('pointerdown', this.handlePointerDown, this);
   }
 
   handlePointerDown(pointer, currentlyOver) {
-    if (this.gameOver) return;
+    if (this.gameOver || this.menuOpen) return;
     // ถ้าคลิกโดนปุ่ม UI ไม่ต้องวางของบนแผนที่
     if (currentlyOver && currentlyOver.length > 0) return;
 
@@ -190,6 +540,7 @@ export class GameScene extends Phaser.Scene {
 
   // เลือกสิ่งก่อสร้าง (เลือกซ้ำ = ยกเลิก, null = ยกเลิก)
   selectBuilding(id) {
+    if (this.menuOpen) return;
     const next = id && id === this.selectedBuilding ? null : id;
     this.selectedBuilding = next && BUILDINGS[next] ? next : null;
     this.buildingMenu.setSelected(this.selectedBuilding);
@@ -249,6 +600,8 @@ export class GameScene extends Phaser.Scene {
 
     Object.entries(def.cost).forEach(([key, amount]) => removeResource(key, amount));
     this.placeBuilding(id, gx, gy);
+    this.hasProgress = true;
+    this.autoSave(false);
     this.refreshUI();
     this.checkGameState();
   }
@@ -295,6 +648,8 @@ export class GameScene extends Phaser.Scene {
     building.rect.destroy();
     building.icon.destroy();
     this.buildings = this.buildings.filter((b) => b !== building);
+    this.hasProgress = true;
+    this.autoSave(false);
     this.refreshUI();
   }
 
@@ -448,7 +803,7 @@ export class GameScene extends Phaser.Scene {
 
   // ---------- วนทุกเฟรม ----------
   update(time, delta) {
-    if (this.gameOver) return;
+    if (this.gameOver || this.menuOpen) return;
 
     // เลื่อนกล้องด้วยลูกศร / WASD
     const cam = this.cameras.main;

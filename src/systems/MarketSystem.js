@@ -87,4 +87,16 @@ export class MarketSystem {
     );
     return { ok: true, gain };
   }
+
+  // เพิ่มเท่านั้น: คืนค่าดัชนีราคาจากเซฟ ไม่เปลี่ยนพฤติกรรมเดิม
+  restore(market = {}) {
+    const pi = market && market.priceIndex;
+    if (!pi || typeof pi !== 'object') return;
+    for (const key of Object.keys(this.priceIndex)) {
+      const v = pi[key];
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
+        this.priceIndex[key] = Math.max(CFG.minIndex, Math.min(CFG.maxIndex, v));
+      }
+    }
+  }
 }
