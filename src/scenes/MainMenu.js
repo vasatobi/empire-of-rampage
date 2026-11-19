@@ -3,6 +3,7 @@
 // ===============================
 import { Scene } from 'phaser';
 import { hasSave, deleteSave } from '../systems/save-system.js';
+import { generateTextures } from '../art/generate-textures.js';
 
 const FONT = 'Courier New, monospace';
 
@@ -20,6 +21,8 @@ export class MainMenu extends Scene {
   }
 
   create() {
+    generateTextures(this);
+
     this.add.rectangle(400, 300, 800, 600, 0x0a0a0a).setDepth(-1);
 
     this.add

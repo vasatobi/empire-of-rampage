@@ -3,6 +3,7 @@
 // ===============================
 import { BUILDINGS } from '../data/buildings.js';
 import { RESOURCES } from '../data/resources.js';
+import { hasBuildingTexture, thumbKey } from '../art/generate-textures.js';
 
 const FONT = 'Courier New, monospace';
 
@@ -38,13 +39,29 @@ export class BuildingMenu {
         .setInteractive({ useHandCursor: true });
 
       const hotkey = def.hotkey ? ` [${def.hotkey}]` : '';
+      const hasThumb = hasBuildingTexture(scene, id);
+      let textX = bx + 8;
+      let thumb = null;
+      if (hasThumb) {
+        thumb = scene.add
+          .image(bx + 8, top + 7, thumbKey(id))
+          .setOrigin(0, 0)
+          .setScrollFactor(0)
+          .setDepth(51);
+        textX = bx + 8 + thumb.width + 6;
+      }
       const title = scene.add
-        .text(bx + 8, top + 7, `${def.icon} ${def.name}${hotkey}`, {
-          fontFamily: FONT,
-          fontSize: '14px',
-          fontStyle: 'bold',
-          color: '#e2e8f0',
-        })
+        .text(
+          textX,
+          top + 7,
+          hasThumb ? `${def.name}${hotkey}` : `${def.icon} ${def.name}${hotkey}`,
+          {
+            fontFamily: FONT,
+            fontSize: '14px',
+            fontStyle: 'bold',
+            color: '#e2e8f0',
+          }
+        )
         .setScrollFactor(0)
         .setDepth(51);
 
@@ -78,7 +95,7 @@ export class BuildingMenu {
       });
       bg.on('pointerdown', () => this.onSelect(id));
 
-      this.buttons.push({ id, bg, title, cost, info });
+      this.buttons.push({ id, bg, title, cost, info, thumb });
     });
   }
 
@@ -98,6 +115,7 @@ export class BuildingMenu {
       b.title.destroy();
       b.cost.destroy();
       b.info.destroy();
+      if (b.thumb) b.thumb.destroy();
     });
     this.buttons = [];
   }

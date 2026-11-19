@@ -21,6 +21,7 @@ import { ResourceBar } from '../ui/ResourceBar.js';
 import { EconomyBar } from '../ui/EconomyBar.js';
 import { BuildingMenu } from '../ui/BuildingMenu.js';
 import { MarketPanel } from '../ui/MarketPanel.js';
+import { generateTextures, hasBuildingTexture, textureKey } from '../art/generate-textures.js';
 import { SAVE_VERSION, writeSave, readSave, hasSave } from '../systems/save-system.js';
 
 // --- ค่าที่ปรับได้ ---
@@ -60,6 +61,9 @@ export class GameScene extends Phaser.Scene {
   }
 
   create(data = {}) {
+    // สร้าง texture สไปรต์ (เรียกซ้ำได้ ข้ามอันที่มีอยู่แล้ว) ต้องมาก่อนวาดอาคาร/เมนู
+    generateTextures(this);
+
     // สถานะทั้งหมดต้องตั้งใหม่ทุกครั้งที่ create() (รวมถึงตอน scene.restart)
     this.gameOver = false;
     this.selectedBuilding = null;
@@ -201,8 +205,7 @@ export class GameScene extends Phaser.Scene {
           if (this.occupancy[y] && this.occupancy[y][x] === b) this.occupancy[y][x] = null;
         }
       }
-      b.rect.destroy();
-      b.icon.destroy();
+      b.parts.forEach((p) => p.destroy());
     }
     this.buildings = [];
     this.tickCount = 0;
@@ -612,21 +615,31 @@ export class GameScene extends Phaser.Scene {
     const px = gx * TILE;
     const py = gy * TILE;
 
-    const rect = this.add
-      .rectangle(px + 1, py + 1, w * TILE - 2, h * TILE - 2, hex(def.color))
-      .setOrigin(0, 0)
-      .setStrokeStyle(2, hex(def.highlight))
-      .setDepth(5);
+    const parts = [];
+    if (hasBuildingTexture(this, id)) {
+      // สไปรต์ขนาด w*TILE x h*TILE พอดี (texture วาดตาม ART_SCALE ให้ตรงกันแล้ว)
+      parts.push(this.add.image(px, py, textureKey(id)).setOrigin(0, 0).setDepth(5));
+    } else {
+      // fallback สี่เหลี่ยม+อีโมจิ ถ้า texture ไม่มี
+      parts.push(
+        this.add
+          .rectangle(px + 1, py + 1, w * TILE - 2, h * TILE - 2, hex(def.color))
+          .setOrigin(0, 0)
+          .setStrokeStyle(2, hex(def.highlight))
+          .setDepth(5)
+      );
+      parts.push(
+        this.add
+          .text(px + (w * TILE) / 2, py + (h * TILE) / 2, def.icon, {
+            fontFamily: FONT,
+            fontSize: `${Math.floor(Math.min(w, h) * TILE * 0.55)}px`,
+          })
+          .setOrigin(0.5, 0.5)
+          .setDepth(6)
+      );
+    }
 
-    const icon = this.add
-      .text(px + (w * TILE) / 2, py + (h * TILE) / 2, def.icon, {
-        fontFamily: FONT,
-        fontSize: `${Math.floor(Math.min(w, h) * TILE * 0.55)}px`,
-      })
-      .setOrigin(0.5, 0.5)
-      .setDepth(6);
-
-    const building = { id, gx, gy, w, h, rect, icon };
+    const building = { id, gx, gy, w, h, parts };
     for (let y = gy; y < gy + h; y++) {
       for (let x = gx; x < gx + w; x++) {
         this.occupancy[y][x] = building;
@@ -645,8 +658,7 @@ export class GameScene extends Phaser.Scene {
         this.occupancy[y][x] = null;
       }
     }
-    building.rect.destroy();
-    building.icon.destroy();
+    building.parts.forEach((p) => p.destroy());
     this.buildings = this.buildings.filter((b) => b !== building);
     this.hasProgress = true;
     this.autoSave(false);
